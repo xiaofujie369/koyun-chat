@@ -1,0 +1,43 @@
+{
+    email admin@koyun.edu.kg
+}
+
+(koyunchat_routes) {
+    encode gzip zstd
+
+    handle /api/* {
+        reverse_proxy backend:8000
+    }
+
+    handle /ws/* {
+        reverse_proxy backend:8000
+    }
+
+    handle /widget.js {
+        root * /srv/widget
+        file_server
+    }
+
+    handle /widget.css {
+        root * /srv/widget
+        file_server
+    }
+
+    handle /widget/* {
+        root * /srv/widget
+        try_files {path} /iframe.html
+        file_server
+    }
+
+    handle {
+        reverse_proxy frontend:3000
+    }
+}
+
+chat.koyun.edu.kg {
+    import koyunchat_routes
+}
+
+:80 {
+    import koyunchat_routes
+}

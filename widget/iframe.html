@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>KoyunChat Widget</title>
+    <link rel="stylesheet" href="/widget.css" />
+  </head>
+  <body>
+    <main class="widget-shell">
+      <header class="widget-header">
+        <div>
+          <strong id="siteName">KoyunChat</strong>
+          <span id="statusText">在线客服</span>
+        </div>
+        <button id="closeButton" type="button" aria-label="关闭聊天">×</button>
+      </header>
+
+      <section id="messages" class="messages" aria-live="polite"></section>
+
+      <form id="leadForm" class="lead-form" hidden>
+        <input id="leadName" name="name" placeholder="姓名" autocomplete="name" />
+        <input id="leadEmail" name="email" placeholder="邮箱" autocomplete="email" />
+        <input id="leadTelegram" name="telegram" placeholder="Telegram" />
+        <input id="leadWhatsapp" name="whatsapp" placeholder="WhatsApp" />
+      </form>
+
+      <form id="messageForm" class="composer">
+        <textarea id="messageInput" placeholder="输入消息..." rows="1"></textarea>
+        <button type="submit">发送</button>
+      </form>
+      <footer id="branding" class="branding">Powered by KoyunChat</footer>
+    </main>
+
+    <script>
+      (function () {
+        var pathParts = window.location.pathname.split("/");
+        var siteKey = decodeURIComponent(pathParts[pathParts.length - 1] || "");
+        var query = new URLSearchParams(window.location.search);
+        var visitorUid = query.get("visitor_uid") || localStorage.getItem("koyunchat_visitor_uid_" + siteKey);
+        var messagesEl = document.getElementById("messages");
+        var messageForm = document.getElementById("messageForm");
+        var input = document.getElementById("messageInput");
+        var leadForm = document.getElementById("leadForm");
+        var branding = document.getElementById("branding");
+        var config = null;
+        var conversationId = null;
+        var socket = null;
+
+        function addMessage(sender, content) {
+          var node = document.createElement("div");
+          node.className = "message " + sender;
+          var label = document.createElement("span");
+          label.textContent = sender === "visitor" ? "你" : sender === "ai" ? "AI 客服" : "客服";
+          var body = document.createElement("p");
+          body.textContent = content;
+          node.appendChild(label);
+          node.appendChild(body);
+          messagesEl.appendChild(node);
+          messagesEl.scrollTop = messagesEl.scrollHeight;
+        }
+
+        function collectLead() {
+          return {
+            name: document.getElementById("leadName").value,
+            email: document.getElementById("leadEmail").value,
+            telegram: document.getElementById("leadTelegram").value,
+            whatsapp: document.getElementById("leadWhatsapp").value
+          };
+        }
+
+        function postJson(path, body) {
+          return fetch(path, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body)
+          }).then(function (response) {
+            if (!response.ok) throw new Error("Request failed");
+            return response.json();
+          });
+        }
+
+        function connectSocket() {
+          var protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+          socket = new WebSocket(protocol + "//" + window.location.host + "/ws/widget/" + encodeURIComponent(siteKey) + "/" + encodeURIComponent(visitorUid));
+          socket.onmessage = function (event) {
+            var data = JSON.parse(event.data);
+            if (data.type === "message") {
+              conversationId = data.conversation_id || conversationId;
+              addMessage(data.sender_type || "agent", data.content);
+            }
+          };
+          socket.onopen = function () {
+            setInterval(function () {
+              if (socket && socket.readyState === WebSocket.OPEN) {
+                socket.send(JSON.stringify({ type: "ping" }));
+              }
+            }, 25000);
+          };
+        }
+
+        fetch("/api/widget/site/" + encodeURIComponent(siteKey) + "/config")
+          .then(function (response) {
+            if (!response.ok) throw new Error("Config failed");
+            return response.json();
+          })
+          .then(function (data) {
+            config = data;
+            document.getElementById("siteName").textContent = data.name;
+            document.documentElement.style.setProperty("--widget-color", data.widget_color || "#2563eb");
+            if (data.show_branding === false) branding.hidden = true;
+            addMessage("agent", data.welcome_message || "您好，我是在线客服，有什么可以帮您？");
+            connectSocket();
+          })
+          .catch(function () {
+            addMessage("agent", "聊天窗口暂时无法加载，请稍后再试。");
+          });
+
+        document.getElementById("closeButton").addEventListener("click", function () {
+          window.parent.postMessage({ type: "koyunchat_close" }, window.location.origin);
+        });
+
+        messageForm.addEventListener("submit", function (event) {
+          event.preventDefault();
+          var content = input.value.trim();
+          if (!content) return;
+          input.value = "";
+          addMessage("visitor", content);
+          postJson("/api/widget/message", {
+            site_key: siteKey,
+            visitor_uid: visitorUid,
+            content: content,
+            source_url: document.referrer || null,
+            lead: collectLead()
+          })
+            .then(function (data) {
+              conversationId = data.conversation_id;
+              (data.messages || []).forEach(function (message) {
+                if (message.sender_type !== "visitor" && (!socket || socket.readyState !== WebSocket.OPEN)) {
+                  addMessage(message.sender_type, message.content);
+                }
+              });
+              if (config && config.offline_message && content.length > 8) {
+                leadForm.hidden = false;
+              }
+            })
+            .catch(function () {
+              leadForm.hidden = false;
+              addMessage("agent", config && config.offline_message ? config.offline_message : "请留下联系方式，我们会尽快回复。");
+            });
+        });
+      })();
+    </script>
+  </body>
+</html>
