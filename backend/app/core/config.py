@@ -1,4 +1,5 @@
 from functools import lru_cache
+from typing import Any
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -10,7 +11,9 @@ class Settings(BaseSettings):
     app_name: str = "KoyunChat"
     app_env: str = "development"
     app_url: str = "http://localhost"
-    allowed_origins: list[str] = Field(default_factory=lambda: ["http://localhost", "http://localhost:3000"])
+    # Keep this as a plain string so pydantic-settings does not try to JSON-decode
+    # comma-separated values from Docker/.env files before validators run.
+    allowed_origins: str | list[str] | None = "http://localhost,http://localhost:3000"
 
     database_url: str = "postgresql+psycopg://koyunchat:change_me@localhost:5432/koyunchat"
     redis_url: str = "redis://localhost:6379/0"
@@ -38,10 +41,28 @@ class Settings(BaseSettings):
 
     @field_validator("allowed_origins", mode="before")
     @classmethod
-    def split_allowed_origins(cls, value: str | list[str]) -> list[str]:
-        if isinstance(value, str):
-            return [item.strip() for item in value.split(",") if item.strip()]
+    def parse_allowed_origins(cls, value: Any) -> str | list[str] | None:
         return value
+
+    @property
+    def cors_origins(self) -> list[str]:
+        value = self.allowed_origins
+        if not value:
+            return ["http://localhost", "http://localhost:3000"]
+        if isinstance(value, list):
+            return [str(item).strip() for item in value if str(item).strip()]
+        raw = str(value).strip()
+        if raw.startswith("[") and raw.endswith("]"):
+            # Lightweight support for JSON-like env values without requiring them.
+            try:
+                import json
+
+                parsed = json.loads(raw)
+                if isinstance(parsed, list):
+                    return [str(item).strip() for item in parsed if str(item).strip()]
+            except Exception:
+                pass
+        return [item.strip() for item in raw.split(",") if item.strip()]
 
 
 @lru_cache
